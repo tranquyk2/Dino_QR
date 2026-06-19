@@ -1,0 +1,145 @@
+/* ============================================================
+ *  motor_controller.ino
+ *  Điều khiển motor DC 24V qua driver IBT-2 (BTS7960):
+ *
+ *  Hành vi nút nhấn:
+ *    - Bình thường (không NG): mỗi lần nhấn -> toggle chạy/dừng motor.
+ *    - Khi NG (còi đang kêu, motor đã dừng):
+ *        + Nhấn lần 1 -> chỉ TẮT CÒI (motor vẫn dừng).
+ *        + Nhấn lần 2 -> xóa ngFlag, cho motor CHẠY LẠI.
+ *
+ *  Lệnh từ PC qua Serial:
+ *    - "START" -> bật motor (dùng khi nhấn nút trên app).
+ *    - "NG"    -> dừng motor, bật còi.
+ *    - "OK"    -> tắt còi, xóa ngFlag (không tự chạy lại motor).
+ *    - "STATUS"-> trả về trạng thái hiện tại.
+ * ============================================================ */
+
+const int RPWM_PIN   = 9;
+const int BUTTON_PIN = 10;
+const int LED_PIN    = 13;
+const int buzzerPin  = 8;
+
+const int MOTOR_SPEED = 15;  // 0-255
+
+bool motorRunning = false;
+bool ngFlag       = false;
+bool buzzerOn     = false;
+
+// Debounce
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;
+int lastButtonState = HIGH;
+int buttonState     = HIGH;
+
+String inputBuffer = "";
+
+// -------------------------------------------------------
+void setup() {
+  Serial.begin(9600);
+  pinMode(RPWM_PIN,   OUTPUT);
+  pinMode(LED_PIN,    OUTPUT);
+  pinMode(buzzerPin,  OUTPUT);
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  setBuzzer(false);
+  setMotor(false);
+  Serial.println("Arduino motor controller san sang.");
+}
+
+// -------------------------------------------------------
+void loop() {
+  // 1. Đọc lệnh Serial từ PC
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    if (c == '\n' || c == '\r') {
+      if (inputBuffer.length() > 0) {
+        handleCommand(inputBuffer);
+        inputBuffer = "";
+      }
+    } else {
+      inputBuffer += c;
+    }
+  }
+
+  // 2. Đọc nút nhấn (debounce)
+  int reading = digitalRead(BUTTON_PIN);
+  if (reading != lastButtonState) lastDebounceTime = millis();
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (reading != buttonState) {
+      buttonState = reading;
+      if (buttonState == LOW) onButtonPressed();
+    }
+  }
+  lastButtonState = reading;
+}
+
+// -------------------------------------------------------
+void handleCommand(String cmd) {
+  cmd.trim();
+  cmd.toUpperCase();
+
+  if (cmd == "START") {
+    // PC yêu cầu bật motor (khi app khởi động hoặc reconnect)
+    ngFlag = false;
+    setBuzzer(false);
+    setMotor(true);
+    Serial.println("START_RECEIVED: Motor chay.");
+  }
+  else if (cmd == "NG") {
+    ngFlag = true;
+    setMotor(false);
+    setBuzzer(true);
+    Serial.println("NG_RECEIVED: Motor dung, coi bat.");
+  }
+  else if (cmd == "OK") {
+    ngFlag = false;
+    setBuzzer(false);
+    // Không tự chạy lại motor - người vận hành nhấn nút.
+    Serial.println("OK_RECEIVED: Coi tat.");
+  }
+  else if (cmd == "STATUS") {
+    Serial.print("MOTOR=");   Serial.print(motorRunning ? "RUN" : "STOP");
+    Serial.print(" NG=");     Serial.print(ngFlag    ? "1" : "0");
+    Serial.print(" BUZZER="); Serial.println(buzzerOn ? "1" : "0");
+  }
+  else {
+    Serial.print("UNKNOWN_CMD: "); Serial.println(cmd);
+  }
+}
+
+// -------------------------------------------------------
+void onButtonPressed() {
+  if (ngFlag && buzzerOn) {
+    // NG + còi đang kêu -> nhấn lần 1: chỉ tắt còi
+    setBuzzer(false);
+    Serial.println("BUTTON: Tat coi (van NG, motor van dung).");
+  }
+  else if (ngFlag && !buzzerOn) {
+    // NG + còi đã tắt -> nhấn lần 2: xóa NG, chạy lại motor
+    ngFlag = false;
+    setMotor(true);
+    Serial.println("BUTTON: Xoa NG, motor chay lai.");
+  }
+  else {
+    // Bình thường: toggle motor
+    motorRunning = !motorRunning;
+    setMotor(motorRunning);
+    Serial.print("BUTTON: Motor ");
+    Serial.println(motorRunning ? "RUN" : "STOP");
+  }
+}
+
+// -------------------------------------------------------
+void setMotor(bool run) {
+  motorRunning = run;
+  analogWrite(RPWM_PIN, run ? MOTOR_SPEED : 0);
+  digitalWrite(LED_PIN, run ? HIGH : LOW);
+
+}
+
+void setBuzzer(bool on) {
+  buzzerOn = on;
+  digitalWrite(buzzerPin, on ? HIGH : LOW);
+}
